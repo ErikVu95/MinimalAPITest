@@ -42,7 +42,6 @@ app.MapPost("/login", (LoginData loginData, UserService userService) =>
 app.MapPost("/logout", (UserService userService) =>
 {
     userService.LoggedInUser = null;
-
     return Results.Ok("Logout successful");
 });
 
