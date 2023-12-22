@@ -165,7 +165,6 @@ app.MapPost("/setConfig", (string newConfigJson, UserService userService) =>
 // Admin only
 app.MapGet("/getUsers", (UserService userService) =>
 {
-    // Check if the logged-in user is an admin
     if (userService.LoggedInUser != null && userService.LoggedInUser.Access == "admin")
     {
         // Read all users from Users.txt
@@ -260,4 +259,5 @@ app.MapDelete("/removeUser/{targetUserID}", (string targetUserID, UserService us
     }
 });
 
+Console.WriteLine("Test");
 app.Run();
