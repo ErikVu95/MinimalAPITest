@@ -258,5 +258,4 @@ app.MapDelete("/removeUser/{targetUserID}", (string targetUserID, UserService us
     }
 });
 
-Console.WriteLine("Test");
 app.Run();
