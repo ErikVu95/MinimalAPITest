@@ -1,0 +1,3 @@
+UserID=qwe123,Username=DaBoss,Password=$$$1mDaBo$$$,Access=admin
+UserID=def456,Username=DaDev,Password=qQ1#qweqweqweqweqwe,Access=developer
+UserID=ghi789,Username=DaReader,Password=1CanOnlyRead!,Access=reader
