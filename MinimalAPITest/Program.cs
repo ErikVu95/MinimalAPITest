@@ -45,7 +45,7 @@ app.MapPost("/logout", (UserService userService) =>
     return Results.Ok("Logout successful");
 });
 
-app.MapPut("/setUsername", (string newUsername, UserService userService) =>
+app.MapPost("/setUsername", (string newUsername, UserService userService) =>
 {
     if (string.IsNullOrWhiteSpace(newUsername))
     {
@@ -74,7 +74,7 @@ app.MapPut("/setUsername", (string newUsername, UserService userService) =>
 });
 
 
-app.MapPut("/setPassword", (string newPassword, UserService userService) =>
+app.MapPost("/setPassword", (string newPassword, UserService userService) =>
 {
     if (!PasswordValidator.IsValidPassword(newPassword))
     {
