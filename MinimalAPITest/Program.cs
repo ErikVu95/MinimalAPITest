@@ -2,23 +2,35 @@ using MinimalAPITest;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddCors();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<UserService>();
 
 var filePath = Path.Combine(builder.Environment.ContentRootPath, "Users.txt");
 
-var userFileLoader = new UserFileLoader(filePath);
+UserFileLoader userFileLoader = new UserFileLoader(filePath);
 var users = userFileLoader.LoadUsersFromFile();
 
 UsernameUpdater usernameUpdater = new UsernameUpdater(filePath);
 PasswordUpdater passwordUpdater = new PasswordUpdater(filePath);
 
-builder.Services.AddSingleton(users);
+//builder.Services.AddSingleton(users);
 
 var app = builder.Build();
 
+app.UseHttpsRedirection();
 app.UseRouting();
+
+app.UseCors(builder =>
+{
+    //builder.AllowAnyOrigin()
+    //       .AllowAnyHeader()
+    //       .AllowAnyMethod();
+    builder.WithOrigins("http://127.0.0.1:5500")
+           .AllowAnyHeader()
+           .AllowAnyMethod();
+});
 
 if (app.Environment.IsDevelopment())
 {
@@ -166,36 +178,36 @@ app.MapPost("/setConfig", (string newConfigJson, UserService userService) =>
 // Admin only
 app.MapGet("/getUsers", (UserService userService) =>
 {
-    if (userService.LoggedInUser != null && userService.LoggedInUser.Access == "admin")
-    {
-        // Read all users from Users.txt
-        var filePath = Path.Combine(app.Environment.ContentRootPath, "Users.txt");
+    //if (userService.LoggedInUser != null && userService.LoggedInUser.Access == "admin")
+    //{
+    // Read all users from Users.txt
+    var filePath = Path.Combine(app.Environment.ContentRootPath, "Users.txt");
 
-        if (File.Exists(filePath))
-        {
-            var users = File.ReadAllLines(filePath)
-                .Select(line =>
+    if (File.Exists(filePath))
+    {
+        var users = File.ReadAllLines(filePath)
+            .Select(line =>
+            {
+                var parts = line.Split(',');
+                return new User
                 {
-                    var parts = line.Split(',');
-                    return new User
-                    {
-                        UserID = parts[0].Split('=')[1],
-                        Username = parts[1].Split('=')[1],
-                        Password = parts[2].Split('=')[1],
-                        Access = parts[3].Split('=')[1]
-                    };
-                }).ToList();
-            return Results.Ok(users);
-        }
-        else
-        {
-            return Results.BadRequest("The file Users.txt does not exist.");
-        }
+                    UserID = parts[0].Split('=')[1],
+                    Username = parts[1].Split('=')[1],
+                    Password = parts[2].Split('=')[1],
+                    Access = parts[3].Split('=')[1]
+                };
+            }).ToList();
+        return Results.Ok(users);
     }
     else
     {
-        return Results.BadRequest("Admin access required to get users.");
+        return Results.BadRequest("The file Users.txt does not exist.");
     }
+    //}
+    //else
+    //{
+    //    return Results.BadRequest("Admin access required to get users.");
+    //}
 });
 
 // Admin only
