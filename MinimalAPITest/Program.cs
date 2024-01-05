@@ -5,7 +5,6 @@ using System.Text;
 using MinimalAPITest;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using Microsoft.AspNetCore.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -98,33 +97,6 @@ app.MapPost("/login", (LoginData loginData, HttpContext ctx) =>
         return Results.BadRequest("Invalid username or password");
     }
 });
-
-
-//app.MapPost("/login", (LoginData loginData, UserService userService) =>
-//{
-//    var user = users.FirstOrDefault(u => u.Username == loginData.Username && u.Password == loginData.Password);
-
-//    if (user != null)
-//    {
-//        var tokenHandler = new JwtSecurityTokenHandler();
-//        var tokenDescriptor = new SecurityTokenDescriptor
-//        {
-//            Subject = new ClaimsIdentity(new[] { new Claim("userId", user.UserID) }),
-//            Expires = DateTime.UtcNow.AddMinutes(30),
-//            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
-//        };
-//        var token = tokenHandler.CreateToken(tokenDescriptor);
-
-//        userService.LoggedInUser = user;
-//        Console.WriteLine($"Logged in user: {userService.LoggedInUser?.Username}");
-
-//        return Results.Ok(new { Token = tokenHandler.WriteToken(token), Message = $"Welcome, {user.Username}! Access level: {user.Access}" });
-//    }
-//    else
-//    {
-//        return Results.BadRequest("Invalid username or password");
-//    }
-//});
 
 app.MapPost("/logout", (UserService userService) =>
 {
