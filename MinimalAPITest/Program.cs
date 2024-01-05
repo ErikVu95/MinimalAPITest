@@ -1,4 +1,11 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
+
 using MinimalAPITest;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,7 +22,21 @@ var users = userFileLoader.LoadUsersFromFile();
 UsernameUpdater usernameUpdater = new UsernameUpdater(filePath);
 PasswordUpdater passwordUpdater = new PasswordUpdater(filePath);
 
-//builder.Services.AddSingleton(users);
+var key = Encoding.ASCII.GetBytes("this_is_a_test_secret_key_1234567890");
+
+builder.Services.AddAuthorization();
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(key),
+            ValidateIssuer = false,
+            ValidateAudience = false,
+        };
+    });
 
 var app = builder.Build();
 
@@ -32,26 +53,78 @@ app.UseCors(builder =>
            .AllowAnyMethod();
 });
 
+app.UseAuthentication();
+app.UseAuthorization();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-app.MapPost("/login", (LoginData loginData, UserService userService) =>
+app.MapPost("/login", (LoginData loginData, HttpContext ctx) =>
 {
     var user = users.FirstOrDefault(u => u.Username == loginData.Username && u.Password == loginData.Password);
 
     if (user != null)
     {
-        userService.LoggedInUser = user;
-        return Results.Ok($"Welcome, {user.Username}! Access level: {user.Access}");
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var tokenDescriptor = new SecurityTokenDescriptor
+        {
+            Subject = new ClaimsIdentity(new[] {
+                new Claim(ClaimTypes.NameIdentifier, user.UserID),
+                new Claim(ClaimTypes.Name, user.Username),
+                new Claim("access", user.Access),
+            }),
+            Expires = DateTime.UtcNow.AddMinutes(30),
+            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
+        };
+        var token = tokenHandler.CreateToken(tokenDescriptor);
+
+        Console.WriteLine($"Logged in user: {user.Username}");
+        var accessClaim = tokenDescriptor.Subject?.FindFirst("access");
+        Console.WriteLine(token);
+
+        ctx.Response.Headers.Add("Authorization", $"Bearer {tokenHandler.WriteToken(token)}");
+
+        return Results.Ok(new
+        {
+            Token = tokenHandler.WriteToken(token),
+            Message = $"Welcome, {user.Username}! Access level: {user.Access}"
+        });
     }
     else
     {
         return Results.BadRequest("Invalid username or password");
     }
 });
+
+
+//app.MapPost("/login", (LoginData loginData, UserService userService) =>
+//{
+//    var user = users.FirstOrDefault(u => u.Username == loginData.Username && u.Password == loginData.Password);
+
+//    if (user != null)
+//    {
+//        var tokenHandler = new JwtSecurityTokenHandler();
+//        var tokenDescriptor = new SecurityTokenDescriptor
+//        {
+//            Subject = new ClaimsIdentity(new[] { new Claim("userId", user.UserID) }),
+//            Expires = DateTime.UtcNow.AddMinutes(30),
+//            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
+//        };
+//        var token = tokenHandler.CreateToken(tokenDescriptor);
+
+//        userService.LoggedInUser = user;
+//        Console.WriteLine($"Logged in user: {userService.LoggedInUser?.Username}");
+
+//        return Results.Ok(new { Token = tokenHandler.WriteToken(token), Message = $"Welcome, {user.Username}! Access level: {user.Access}" });
+//    }
+//    else
+//    {
+//        return Results.BadRequest("Invalid username or password");
+//    }
+//});
 
 app.MapPost("/logout", (UserService userService) =>
 {
@@ -116,34 +189,26 @@ app.MapPost("/setPassword", (string newPassword, UserService userService) =>
     }
 });
 
-
-app.MapGet("/getConfig", (UserService userService) =>
+app.MapGet("/getConfig", () =>
 {
-    if (userService.LoggedInUser != null)
-    {
-        var filePath = Path.Combine(app.Environment.ContentRootPath, "Config.json");
+    var filePath = Path.Combine(app.Environment.ContentRootPath, "Config.json");
 
-        if (File.Exists(filePath))
+    if (File.Exists(filePath))
+    {
+        try
         {
-            try
-            {
-                var configJson = File.ReadAllText(filePath);
-                return Results.Ok(configJson);
-            }
-            catch (Exception ex)
-            {
-                return Results.BadRequest($"Error reading Config.json: {ex.Message}");
-            }
+            var configJson = File.ReadAllText(filePath);
+            return Results.Ok(configJson);
         }
-        else
+        catch (Exception ex)
         {
-            return Results.BadRequest("Config.json not found.");
+            return Results.BadRequest($"Error reading Config.json: {ex.Message}");
         }
     }
     else
     {
-        return Results.BadRequest("User not logged in");
-    };
+        return Results.BadRequest("Config.json not found.");
+    }
 });
 
 // Developer and admin
@@ -176,38 +241,39 @@ app.MapPost("/setConfig", (string newConfigJson, UserService userService) =>
 });
 
 // Admin only
-app.MapGet("/getUsers", (UserService userService) =>
+app.MapGet("/getUsers", (HttpContext ctx) =>
 {
-    //if (userService.LoggedInUser != null && userService.LoggedInUser.Access == "admin")
-    //{
-    // Read all users from Users.txt
-    var filePath = Path.Combine(app.Environment.ContentRootPath, "Users.txt");
+    var loggedInUserAccessClaim = ctx.User?.FindFirst("access")?.Value;
 
-    if (File.Exists(filePath))
+    // Check if the logged-in user has admin access
+    if (loggedInUserAccessClaim != null && loggedInUserAccessClaim == "admin")
     {
-        var users = File.ReadAllLines(filePath)
-            .Select(line =>
-            {
-                var parts = line.Split(',');
-                return new User
+        if (File.Exists(filePath))
+        {
+            var users = File.ReadAllLines(filePath)
+                .Select(line =>
                 {
-                    UserID = parts[0].Split('=')[1],
-                    Username = parts[1].Split('=')[1],
-                    Password = parts[2].Split('=')[1],
-                    Access = parts[3].Split('=')[1]
-                };
-            }).ToList();
-        return Results.Ok(users);
+                    var parts = line.Split(',');
+                    return new User
+                    {
+                        UserID = parts[0].Split('=')[1],
+                        Username = parts[1].Split('=')[1],
+                        Password = parts[2].Split('=')[1],
+                        Access = parts[3].Split('=')[1]
+                    };
+                }).ToList();
+
+            return Results.Ok(users);
+        }
+        else
+        {
+            return Results.BadRequest("The file Users.txt does not exist.");
+        }
     }
     else
     {
-        return Results.BadRequest("The file Users.txt does not exist.");
+        return Results.Forbid();
     }
-    //}
-    //else
-    //{
-    //    return Results.BadRequest("Admin access required to get users.");
-    //}
 });
 
 // Admin only
