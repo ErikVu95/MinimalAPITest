@@ -9,8 +9,13 @@
             this.filePath = filePath;
         }
 
-        public bool UpdateUsername(string userId, string newUsername)
+        public void UpdateUsername(string userId, string newUsername)
         {
+            if (string.IsNullOrWhiteSpace(newUsername))
+            {
+                throw new ArgumentException("New username cannot be null or whitespace.");
+            }
+
             var lines = File.ReadAllLines(filePath).ToList();
 
             for (int i = 0; i < lines.Count; i++)
@@ -27,16 +32,16 @@
                     {
                         lines[i] = lines[i].Replace($"Username={existingUsername}", $"Username={newUsername}");
                         File.WriteAllLines(filePath, lines);
-                        return true;
+                        return;
                     }
                     else
                     {
-                        return false; 
+                        throw new InvalidOperationException("New username is the same as the existing username.");
                     }
                 }
             }
 
-            return false;
+            throw new KeyNotFoundException("User ID not found or username update failed.");
         }
     }
 }

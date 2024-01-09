@@ -5,6 +5,7 @@ using System.Text;
 using MinimalAPITest;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using Newtonsoft.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,13 +14,13 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<UserService>();
 
-var filePath = Path.Combine(builder.Environment.ContentRootPath, "Users.txt");
+var usersFilePath = Path.Combine(builder.Environment.ContentRootPath, "Users.txt");
 
-UserFileLoader userFileLoader = new UserFileLoader(filePath);
+UserFileLoader userFileLoader = new UserFileLoader(usersFilePath);
 var users = userFileLoader.LoadUsersFromFile();
 
-UsernameUpdater usernameUpdater = new UsernameUpdater(filePath);
-PasswordUpdater passwordUpdater = new PasswordUpdater(filePath);
+UsernameUpdater usernameUpdater = new UsernameUpdater(usersFilePath);
+PasswordUpdater passwordUpdater = new PasswordUpdater(usersFilePath);
 
 var key = Encoding.ASCII.GetBytes("this_is_a_test_secret_key_1234567890");
 
@@ -44,12 +45,12 @@ app.UseRouting();
 
 app.UseCors(builder =>
 {
-    //builder.AllowAnyOrigin()
-    //       .AllowAnyHeader()
-    //       .AllowAnyMethod();
-    builder.WithOrigins("http://127.0.0.1:5500")
+    builder.AllowAnyOrigin()
            .AllowAnyHeader()
            .AllowAnyMethod();
+           //.AllowCredentials();
+
+    //builder.WithOrigins("http://127.0.0.1:5500")
 });
 
 app.UseAuthentication();
@@ -61,7 +62,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.MapPost("/login", (LoginData loginData, HttpContext ctx) =>
+app.MapPost("/login", (LoginData loginData) =>
 {
     var user = users.FirstOrDefault(u => u.Username == loginData.Username && u.Password == loginData.Password);
 
@@ -72,20 +73,18 @@ app.MapPost("/login", (LoginData loginData, HttpContext ctx) =>
         {
             Subject = new ClaimsIdentity(new[] {
                 new Claim(ClaimTypes.NameIdentifier, user.UserID),
+                
+                new Claim("userId", user.UserID),
+
                 new Claim(ClaimTypes.Name, user.Username),
                 new Claim("access", user.Access),
             }),
-            Expires = DateTime.UtcNow.AddMinutes(30),
+            Expires = DateTime.UtcNow.AddMinutes(20),
             SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
         };
         var token = tokenHandler.CreateToken(tokenDescriptor);
 
         Console.WriteLine($"Logged in user: {user.Username}");
-        var accessClaim = tokenDescriptor.Subject?.FindFirst("access");
-        Console.WriteLine(token);
-
-        ctx.Response.Headers.Add("Authorization", $"Bearer {tokenHandler.WriteToken(token)}");
-
         return Results.Ok(new
         {
             Token = tokenHandler.WriteToken(token),
@@ -94,41 +93,82 @@ app.MapPost("/login", (LoginData loginData, HttpContext ctx) =>
     }
     else
     {
-        return Results.BadRequest("Invalid username or password");
-    }
-});
-
-app.MapPost("/logout", (UserService userService) =>
-{
-    userService.LoggedInUser = null;
-    return Results.Ok("Logout successful");
-});
-
-app.MapPost("/setUsername", (string newUsername, UserService userService) =>
-{
-    if (string.IsNullOrWhiteSpace(newUsername))
-    {
-        return Results.BadRequest("Username cannot be empty or whitespace.");
-    }
-
-    if (userService.LoggedInUser != null)
-    {
-        var userId = userService.LoggedInUser.UserID;
-        var usernameUpdated = usernameUpdater.UpdateUsername(userId, newUsername);
-
-        if (usernameUpdated)
+        if (users.Any(u => u.Username == loginData.Username))
         {
-            userService.LoggedInUser.Username = newUsername;
-            return Results.Ok($"Username updated to: {newUsername}");
+            return Results.BadRequest("Incorrect password");
         }
         else
         {
-            return Results.BadRequest($"Username '{newUsername}' is the same as the existing one or user not found.");
+            return Results.BadRequest("Invalid username");
         }
     }
-    else
+});
+
+List<string> revokedTokens = [];
+app.MapPost("/logout", (HttpContext context) =>
+{
+    var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
+
+    try
     {
-        return Results.BadRequest("User not logged in.");
+        revokedTokens.Add(token);
+        return Results.Ok("Logout successful");
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest("User is already logged out.");
+    }
+});
+
+app.MapPut("/setUsername", async (HttpContext context) =>
+{
+    var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
+    var userInput = "";
+    var loggedInUserId = "";
+
+    if (!ValidateToken(token) || revokedTokens.Contains(token))
+    {
+        return Results.BadRequest("Invalid or revoked token");
+    }
+
+    try
+    {
+        using (StreamReader reader = new StreamReader(context.Request.Body))
+        {
+            var bodyContent = await reader.ReadToEndAsync();
+
+            var jsonBody = JsonConvert.DeserializeAnonymousType(bodyContent, new { newUsername = "" });
+            userInput = jsonBody.newUsername;
+        }
+
+        // Extract Id from token
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var jsonToken = tokenHandler.ReadToken(token) as JwtSecurityToken;
+
+        if (jsonToken != null)
+        {
+            var nameIdentifierClaim = jsonToken.Claims.FirstOrDefault(c => c.Type == "userId");
+
+            if (nameIdentifierClaim != null)
+            {
+                loggedInUserId = nameIdentifierClaim.Value;
+            }
+            else
+            {
+                throw new InvalidOperationException("NameIdentifier claim not found in the token.");
+            }
+        }
+        else
+        {
+            throw new InvalidOperationException("Invalid or unreadable token.");
+        }
+
+        usernameUpdater.UpdateUsername(loggedInUserId, userInput);
+        return Results.Ok($"Username updated successfully. New username: {userInput}");
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest($"Error processing request: {ex.Message}");
     }
 });
 
@@ -161,27 +201,41 @@ app.MapPost("/setPassword", (string newPassword, UserService userService) =>
     }
 });
 
-app.MapGet("/getConfig", () =>
+app.MapGet("/getConfig", (HttpContext context) =>
 {
-    var filePath = Path.Combine(app.Environment.ContentRootPath, "Config.json");
+    var configFilePath = Path.Combine(app.Environment.ContentRootPath, "Config.json");
+    var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
 
-    if (File.Exists(filePath))
+    try
     {
-        try
+        if (!File.Exists(configFilePath))
         {
-            var configJson = File.ReadAllText(filePath);
-            return Results.Ok(configJson);
+            throw new FileNotFoundException("Config.json not found");
         }
-        catch (Exception ex)
+
+        // Validate the token
+        if (!ValidateToken(token) || revokedTokens.Contains(token))
         {
-            return Results.BadRequest($"Error reading Config.json: {ex.Message}");
+            throw new UnauthorizedAccessException("Invalid or revoked token");
         }
+        var configJson = File.ReadAllText(configFilePath);
+
+        return Results.Ok(configJson);
     }
-    else
+    catch (FileNotFoundException ex)
     {
-        return Results.BadRequest("Config.json not found.");
+        return Results.NotFound($"Config.json not found: {ex.Message}");
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        return Results.BadRequest($"Invalid token: {ex.Message}");
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest($"Error processing request: {ex.Message}");
     }
 });
+
 
 // Developer and admin
 app.MapPost("/setConfig", (string newConfigJson, UserService userService) =>
@@ -213,16 +267,34 @@ app.MapPost("/setConfig", (string newConfigJson, UserService userService) =>
 });
 
 // Admin only
-app.MapGet("/getUsers", (HttpContext ctx) =>
+app.MapGet("/getUsers", (HttpContext context) =>
 {
-    var loggedInUserAccessClaim = ctx.User?.FindFirst("access")?.Value;
+    var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
+    Console.WriteLine(token);
+    if (string.IsNullOrEmpty(token))
+    {
+        return Results.Forbid();
+    }
+
+    if (!ValidateToken(token) || revokedTokens.Contains(token))
+    {
+        return Results.BadRequest("Invalid or revoked token");
+    }
 
     // Check if the logged-in user has admin access
+    var loggedInUserAccessClaim = context.User?.FindFirst("access")?.Value;
+
+
+    Console.WriteLine(loggedInUserAccessClaim);
+
+
+
+
     if (loggedInUserAccessClaim != null && loggedInUserAccessClaim == "admin")
     {
-        if (File.Exists(filePath))
+        if (File.Exists(usersFilePath))
         {
-            var users = File.ReadAllLines(filePath)
+            var users = File.ReadAllLines(usersFilePath)
                 .Select(line =>
                 {
                     var parts = line.Split(',');
@@ -247,6 +319,56 @@ app.MapGet("/getUsers", (HttpContext ctx) =>
         return Results.Forbid();
     }
 });
+
+bool ValidateToken(string token)
+{
+    if (string.IsNullOrEmpty(token))
+    {
+        Console.WriteLine("No token provided.");
+        return false;
+    }
+
+    else if (revokedTokens.Contains(token))
+    {
+        Console.WriteLine("Token has been revoked.");
+        return false;
+    }
+
+    var tokenHandler = new JwtSecurityTokenHandler();
+
+    try
+    {
+        tokenHandler.ValidateToken(token, new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(key),
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ValidateLifetime = true, // Enable lifetime validation
+            ClockSkew = TimeSpan.Zero,
+        }, out SecurityToken validatedToken);
+
+        return true;
+    }
+    catch (SecurityTokenExpiredException e)
+    {
+        Console.WriteLine(e.Message);
+        return false;
+    }
+    catch (SecurityTokenMalformedException e)
+    {
+        Console.WriteLine("Token is malformed: " + e.Message);
+        return false;
+    }
+    catch (SecurityTokenException e)
+    {
+        Console.WriteLine(e.Message);
+        return false;
+    }
+}
+
+
+
 
 // Admin only
 app.MapPost("/addUser", (User newUser, UserService userService) =>
@@ -287,7 +409,7 @@ app.MapDelete("/removeUser/{targetUserID}", (string targetUserID, UserService us
 {
     if (userService.LoggedInUser != null && userService.LoggedInUser.Access == "admin")
     {
-        var lines = File.ReadAllLines(filePath).ToList();
+        var lines = File.ReadAllLines(usersFilePath).ToList();
         var lineToRemove = lines.FirstOrDefault(line => line.Contains($"UserID={targetUserID},"));
 
         if (lineToRemove != null)
@@ -295,7 +417,7 @@ app.MapDelete("/removeUser/{targetUserID}", (string targetUserID, UserService us
             lines.Remove(lineToRemove);
 
             // Write the updated lines back to the file
-            File.WriteAllLines(filePath, lines);
+            File.WriteAllLines(usersFilePath, lines);
 
             return Results.Ok($"User with UserID {targetUserID} removed successfully.");
         }
