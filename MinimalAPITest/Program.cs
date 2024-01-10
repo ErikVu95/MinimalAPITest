@@ -14,10 +14,10 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<UserService>();
 
+// lese på nytt på login og prøve å finne ut hvordan man sletter token helt
 var usersFilePath = Path.Combine(builder.Environment.ContentRootPath, "Users.txt");
-
 UserFileLoader userFileLoader = new UserFileLoader(usersFilePath);
-var users = userFileLoader.LoadUsersFromFile();
+//var users = userFileLoader.LoadUsersFromFile();
 
 UsernameUpdater usernameUpdater = new UsernameUpdater(usersFilePath);
 PasswordUpdater passwordUpdater = new PasswordUpdater(usersFilePath);
@@ -62,8 +62,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.MapPost("/login", (LoginData loginData) =>
+app.MapPost("/login", (LoginData loginData, HttpContext context) =>
 {
+    var users = new UserFileLoader(usersFilePath).LoadUsersFromFile();
+
     var user = users.FirstOrDefault(u => u.Username == loginData.Username && u.Password == loginData.Password);
 
     if (user != null)
@@ -72,10 +74,8 @@ app.MapPost("/login", (LoginData loginData) =>
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(new[] {
-                new Claim(ClaimTypes.NameIdentifier, user.UserID),
-                
+                //new Claim(ClaimTypes.NameIdentifier, user.UserID),
                 new Claim("userId", user.UserID),
-
                 new Claim(ClaimTypes.Name, user.Username),
                 new Claim("access", user.Access),
             }),
@@ -85,6 +85,15 @@ app.MapPost("/login", (LoginData loginData) =>
         var token = tokenHandler.CreateToken(tokenDescriptor);
 
         Console.WriteLine($"Logged in user: {user.Username}");
+
+        context.Response.Cookies.Append("Token", tokenHandler.WriteToken(token), new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            Expires = tokenDescriptor.Expires ?? DateTime.UtcNow.AddMinutes(20),
+        });
+
+
         return Results.Ok(new
         {
             Token = tokenHandler.WriteToken(token),
@@ -164,6 +173,8 @@ app.MapPut("/setUsername", async (HttpContext context) =>
         }
 
         usernameUpdater.UpdateUsername(loggedInUserId, userInput);
+
+        
         return Results.Ok($"Username updated successfully. New username: {userInput}");
     }
     catch (Exception ex)
@@ -173,32 +184,41 @@ app.MapPut("/setUsername", async (HttpContext context) =>
 });
 
 
-app.MapPost("/setPassword", (string newPassword, UserService userService) =>
+app.MapPost("/setPassword", (HttpContext context) =>
 {
-    if (!PasswordValidator.IsValidPassword(newPassword))
+    var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
+    var users = new UserFileLoader(usersFilePath).LoadUsersFromFile();
+
+    if (!ValidateToken(token) || revokedTokens.Contains(token))
     {
-        return Results.BadRequest("Invalid password. Please ensure it meets the required criteria.");
+        return Results.BadRequest("Invalid or revoked token");
     }
 
-    if (userService.LoggedInUser != null)
-    {
-        var userId = userService.LoggedInUser.UserID;
-        var passwordUpdated = passwordUpdater.UpdatePassword(userId, newPassword);
+    //if (!PasswordValidator.IsValidPassword(newPassword))
+    //{
+    //    return Results.BadRequest("Invalid password. Please ensure it meets the required criteria.");
+    //}
 
-        if (passwordUpdated)
-        {
-            userService.LoggedInUser.Password = newPassword;
-            return Results.Ok("Password updated successfully.");
-        }
-        else
-        {
-            return Results.BadRequest("Password is the same as the existing one or user not found.");
-        }
-    }
-    else
-    {
-        return Results.BadRequest("User not logged in.");
-    }
+    //if (userService.LoggedInUser != null)
+    //{
+    //    var userId = userService.LoggedInUser.UserID;
+    //    var passwordUpdated = passwordUpdater.UpdatePassword(userId, newPassword);
+
+    //    if (passwordUpdated)
+    //    {
+    //        userService.LoggedInUser.Password = newPassword;
+    //        return Results.Ok("Password updated successfully.");
+    //    }
+    //    else
+    //    {
+    //        return Results.BadRequest("Password is the same as the existing one or user not found.");
+    //    }
+    //}
+    //else
+    //{
+    //    return Results.BadRequest("User not logged in.");
+    //}
+    return Results.BadRequest();
 });
 
 app.MapGet("/getConfig", (HttpContext context) =>
@@ -270,7 +290,6 @@ app.MapPost("/setConfig", (string newConfigJson, UserService userService) =>
 app.MapGet("/getUsers", (HttpContext context) =>
 {
     var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
-    Console.WriteLine(token);
     if (string.IsNullOrEmpty(token))
     {
         return Results.Forbid();
@@ -283,12 +302,6 @@ app.MapGet("/getUsers", (HttpContext context) =>
 
     // Check if the logged-in user has admin access
     var loggedInUserAccessClaim = context.User?.FindFirst("access")?.Value;
-
-
-    Console.WriteLine(loggedInUserAccessClaim);
-
-
-
 
     if (loggedInUserAccessClaim != null && loggedInUserAccessClaim == "admin")
     {
@@ -373,35 +386,35 @@ bool ValidateToken(string token)
 // Admin only
 app.MapPost("/addUser", (User newUser, UserService userService) =>
 {
-    if (userService.LoggedInUser != null && userService.LoggedInUser.Access == "admin")
-    {
-        string filePath = Path.Combine(app.Environment.ContentRootPath, "Users.txt");
+    //if (userService.LoggedInUser != null && userService.LoggedInUser.Access == "admin")
+    //{
+    //    string filePath = Path.Combine(app.Environment.ContentRootPath, "Users.txt");
 
-        // Check if the UserID already exists
-        if (users.Any(u => u.UserID == newUser.UserID))
-        {
-            return Results.BadRequest($"User with UserID {newUser.UserID} already exists.");
-        }
+    //    // Check if the UserID already exists
+    //    if (users.Any(u => u.UserID == newUser.UserID))
+    //    {
+    //        return Results.BadRequest($"User with UserID {newUser.UserID} already exists.");
+    //    }
 
-        if (newUser.Access.ToLower() == "admin")
-        {
-            return Results.BadRequest("Admins cannot add other admins.");
-        }
+    //    if (newUser.Access.ToLower() == "admin")
+    //    {
+    //        return Results.BadRequest("Admins cannot add other admins.");
+    //    }
 
-        if (!PasswordValidator.IsValidPassword(newUser.Password))
-        {
-            return Results.BadRequest("Invalid password. Please ensure it meets the required criteria.");
-        }
+    //    if (!PasswordValidator.IsValidPassword(newUser.Password))
+    //    {
+    //        return Results.BadRequest("Invalid password. Please ensure it meets the required criteria.");
+    //    }
 
-        var userLine = $"UserID={newUser.UserID},Username={newUser.Username},Password={newUser.Password},Access={newUser.Access}";
-        File.AppendAllLines(filePath, new[] { userLine });
+    //    var userLine = $"UserID={newUser.UserID},Username={newUser.Username},Password={newUser.Password},Access={newUser.Access}";
+    //    File.AppendAllLines(filePath, new[] { userLine });
 
-        return Results.Ok($"User with UserID {newUser.UserID} added successfully.");
-    }
-    else
-    {
-        return Results.BadRequest("Unauthorized access: Admin only");
-    }
+    //    return Results.Ok($"User with UserID {newUser.UserID} added successfully.");
+    //}
+    //else
+    //{
+    //    return Results.BadRequest("Unauthorized access: Admin only");
+    //}
 });
 
 // Admin only
