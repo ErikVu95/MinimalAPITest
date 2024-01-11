@@ -6,6 +6,8 @@ using MinimalAPITest;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Newtonsoft.Json;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using System.Linq.Expressions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -48,7 +50,7 @@ app.UseCors(builder =>
     builder.AllowAnyOrigin()
            .AllowAnyHeader()
            .AllowAnyMethod();
-           //.AllowCredentials();
+    //.AllowCredentials();
 
     //builder.WithOrigins("http://127.0.0.1:5500")
 });
@@ -173,8 +175,6 @@ app.MapPut("/setUsername", async (HttpContext context) =>
         }
 
         usernameUpdater.UpdateUsername(loggedInUserId, userInput);
-
-        
         return Results.Ok($"Username updated successfully. New username: {userInput}");
     }
     catch (Exception ex)
@@ -183,48 +183,84 @@ app.MapPut("/setUsername", async (HttpContext context) =>
     }
 });
 
-
-app.MapPost("/setPassword", (HttpContext context) =>
+app.MapPut("/setPassword", async (HttpContext context) =>
 {
     var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
-    var users = new UserFileLoader(usersFilePath).LoadUsersFromFile();
+    var loggedInUserId = "";
+    var userInput = "";
 
     if (!ValidateToken(token) || revokedTokens.Contains(token))
     {
         return Results.BadRequest("Invalid or revoked token");
     }
 
-    //if (!PasswordValidator.IsValidPassword(newPassword))
-    //{
-    //    return Results.BadRequest("Invalid password. Please ensure it meets the required criteria.");
-    //}
+    try
+    {
+        using (StreamReader reader = new StreamReader(context.Request.Body))
+        {
+            var bodyContent = await reader.ReadToEndAsync();
 
-    //if (userService.LoggedInUser != null)
-    //{
-    //    var userId = userService.LoggedInUser.UserID;
-    //    var passwordUpdated = passwordUpdater.UpdatePassword(userId, newPassword);
+            var jsonBody = JsonConvert.DeserializeAnonymousType(bodyContent, new { newPassword = "" });
+            userInput = jsonBody.newPassword;
+        }
+        Console.WriteLine(userInput);
 
-    //    if (passwordUpdated)
-    //    {
-    //        userService.LoggedInUser.Password = newPassword;
-    //        return Results.Ok("Password updated successfully.");
-    //    }
-    //    else
-    //    {
-    //        return Results.BadRequest("Password is the same as the existing one or user not found.");
-    //    }
-    //}
-    //else
-    //{
-    //    return Results.BadRequest("User not logged in.");
-    //}
-    return Results.BadRequest();
+        if (!context.Request.IsHttps)
+        {
+            return Results.BadRequest("Secure connection required.");
+        }
+
+        if (string.IsNullOrEmpty(userInput) || !PasswordValidator.IsValidPassword(userInput))
+        {
+            return Results.BadRequest("Invalid password. Please ensure it meets the required criteria.");
+        }
+
+        // Extract Id from token
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var jsonToken = tokenHandler.ReadToken(token) as JwtSecurityToken;
+
+        if (jsonToken != null)
+        {
+            var nameIdentifierClaim = jsonToken.Claims.FirstOrDefault(c => c.Type == "userId");
+
+            if (nameIdentifierClaim != null)
+            {
+                loggedInUserId = nameIdentifierClaim.Value;
+            }
+            else
+            {
+                throw new InvalidOperationException("NameIdentifier claim not found in the token.");
+            }
+        }
+        else
+        {
+            throw new InvalidOperationException("Invalid or unreadable token.");
+        }
+
+        var passwordUpdated = passwordUpdater.UpdatePassword(loggedInUserId, userInput);
+        if (passwordUpdated)
+        {
+            Console.WriteLine("Password updated");
+            return Results.Ok("Password updated successfully.");
+        }
+        return Results.BadRequest("The new password should not be the same as the current password.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine(ex);
+        return Results.BadRequest("An error occurred while processing the request.");
+    }
 });
 
 app.MapGet("/getConfig", (HttpContext context) =>
 {
     var configFilePath = Path.Combine(app.Environment.ContentRootPath, "Config.json");
     var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
+
+    if (!ValidateToken(token) || revokedTokens.Contains(token))
+    {
+        return Results.BadRequest("Invalid or revoked token");
+    }
 
     try
     {
@@ -233,7 +269,6 @@ app.MapGet("/getConfig", (HttpContext context) =>
             throw new FileNotFoundException("Config.json not found");
         }
 
-        // Validate the token
         if (!ValidateToken(token) || revokedTokens.Contains(token))
         {
             throw new UnauthorizedAccessException("Invalid or revoked token");
