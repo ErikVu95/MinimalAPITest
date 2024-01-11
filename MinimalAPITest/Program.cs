@@ -6,8 +6,6 @@ using MinimalAPITest;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Newtonsoft.Json;
-using Microsoft.IdentityModel.Protocols.OpenIdConnect;
-using System.Linq.Expressions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,7 +22,7 @@ UserFileLoader userFileLoader = new UserFileLoader(usersFilePath);
 UsernameUpdater usernameUpdater = new UsernameUpdater(usersFilePath);
 PasswordUpdater passwordUpdater = new PasswordUpdater(usersFilePath);
 
-var key = Encoding.ASCII.GetBytes("this_is_a_test_secret_key_1234567890");
+var key = Encoding.ASCII.GetBytes(AppSettings.SecretKey);
 
 builder.Services.AddAuthorization();
 
@@ -115,14 +113,13 @@ app.MapPost("/login", (LoginData loginData, HttpContext context) =>
     }
 });
 
-List<string> revokedTokens = [];
 app.MapPost("/logout", (HttpContext context) =>
 {
     var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
 
     try
     {
-        revokedTokens.Add(token);
+        TokenValidator.revokedTokens.Add(token);
         return Results.Ok("Logout successful");
     }
     catch (Exception ex)
@@ -134,10 +131,10 @@ app.MapPost("/logout", (HttpContext context) =>
 app.MapPut("/setUsername", async (HttpContext context) =>
 {
     var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
+    var loggedInUserId = TokenExtractor.ExtractUserIdFromToken(token);
     var userInput = "";
-    var loggedInUserId = "";
 
-    if (!ValidateToken(token) || revokedTokens.Contains(token))
+    if (!ValidateToken(token) || TokenValidator.revokedTokens.Contains(token))
     {
         return Results.BadRequest("Invalid or revoked token");
     }
@@ -152,28 +149,6 @@ app.MapPut("/setUsername", async (HttpContext context) =>
             userInput = jsonBody.newUsername;
         }
 
-        // Extract Id from token
-        var tokenHandler = new JwtSecurityTokenHandler();
-        var jsonToken = tokenHandler.ReadToken(token) as JwtSecurityToken;
-
-        if (jsonToken != null)
-        {
-            var nameIdentifierClaim = jsonToken.Claims.FirstOrDefault(c => c.Type == "userId");
-
-            if (nameIdentifierClaim != null)
-            {
-                loggedInUserId = nameIdentifierClaim.Value;
-            }
-            else
-            {
-                throw new InvalidOperationException("NameIdentifier claim not found in the token.");
-            }
-        }
-        else
-        {
-            throw new InvalidOperationException("Invalid or unreadable token.");
-        }
-
         usernameUpdater.UpdateUsername(loggedInUserId, userInput);
         return Results.Ok($"Username updated successfully. New username: {userInput}");
     }
@@ -186,16 +161,21 @@ app.MapPut("/setUsername", async (HttpContext context) =>
 app.MapPut("/setPassword", async (HttpContext context) =>
 {
     var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
-    var loggedInUserId = "";
+    var loggedInUserId = TokenExtractor.ExtractUserIdFromToken(token);
     var userInput = "";
 
-    if (!ValidateToken(token) || revokedTokens.Contains(token))
+    if (!ValidateToken(token) || TokenValidator.revokedTokens.Contains(token))
     {
         return Results.BadRequest("Invalid or revoked token");
     }
 
     try
     {
+        if (!context.Request.IsHttps)
+        {
+            return Results.BadRequest("Secure connection required.");
+        }
+
         using (StreamReader reader = new StreamReader(context.Request.Body))
         {
             var bodyContent = await reader.ReadToEndAsync();
@@ -205,36 +185,9 @@ app.MapPut("/setPassword", async (HttpContext context) =>
         }
         Console.WriteLine(userInput);
 
-        if (!context.Request.IsHttps)
-        {
-            return Results.BadRequest("Secure connection required.");
-        }
-
         if (string.IsNullOrEmpty(userInput) || !PasswordValidator.IsValidPassword(userInput))
         {
             return Results.BadRequest("Invalid password. Please ensure it meets the required criteria.");
-        }
-
-        // Extract Id from token
-        var tokenHandler = new JwtSecurityTokenHandler();
-        var jsonToken = tokenHandler.ReadToken(token) as JwtSecurityToken;
-
-        if (jsonToken != null)
-        {
-            var nameIdentifierClaim = jsonToken.Claims.FirstOrDefault(c => c.Type == "userId");
-
-            if (nameIdentifierClaim != null)
-            {
-                loggedInUserId = nameIdentifierClaim.Value;
-            }
-            else
-            {
-                throw new InvalidOperationException("NameIdentifier claim not found in the token.");
-            }
-        }
-        else
-        {
-            throw new InvalidOperationException("Invalid or unreadable token.");
         }
 
         var passwordUpdated = passwordUpdater.UpdatePassword(loggedInUserId, userInput);
@@ -257,7 +210,7 @@ app.MapGet("/getConfig", (HttpContext context) =>
     var configFilePath = Path.Combine(app.Environment.ContentRootPath, "Config.json");
     var token = context.Request.Headers["Authorization"].ToString().Replace("Bearer ", "");
 
-    if (!ValidateToken(token) || revokedTokens.Contains(token))
+    if (!ValidateToken(token) || TokenValidator.revokedTokens.Contains(token))
     {
         return Results.BadRequest("Invalid or revoked token");
     }
@@ -269,7 +222,7 @@ app.MapGet("/getConfig", (HttpContext context) =>
             throw new FileNotFoundException("Config.json not found");
         }
 
-        if (!ValidateToken(token) || revokedTokens.Contains(token))
+        if (!ValidateToken(token) || TokenValidator.revokedTokens.Contains(token))
         {
             throw new UnauthorizedAccessException("Invalid or revoked token");
         }
@@ -330,7 +283,7 @@ app.MapGet("/getUsers", (HttpContext context) =>
         return Results.Forbid();
     }
 
-    if (!ValidateToken(token) || revokedTokens.Contains(token))
+    if (!ValidateToken(token) || TokenValidator.revokedTokens.Contains(token))
     {
         return Results.BadRequest("Invalid or revoked token");
     }
@@ -376,7 +329,7 @@ bool ValidateToken(string token)
         return false;
     }
 
-    else if (revokedTokens.Contains(token))
+    else if (TokenValidator.revokedTokens.Contains(token))
     {
         Console.WriteLine("Token has been revoked.");
         return false;
